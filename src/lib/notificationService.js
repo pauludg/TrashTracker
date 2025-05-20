@@ -1,13 +1,27 @@
 // Usar notificaciones nativas del navegador
 
+let swRegistration = null;
+
 // Verificar si las notificaciones están disponibles en este navegador
 const notificationsAvailable = () => {
-  const available = 'Notification' in window;
+  const available = 'Notification' in window && 'serviceWorker' in navigator;
   if (!available) {
-    console.warn("API de Notificaciones no disponible en este navegador");
+    console.warn("API de Notificaciones o Service Worker no disponible en este navegador");
   }
   return available;
 }
+
+// Registrar el Service Worker
+const registerServiceWorker = async () => {
+  try {
+    swRegistration = await navigator.serviceWorker.register('/sw.js');
+    console.log('Service Worker registrado:', swRegistration);
+    return true;
+  } catch (error) {
+    console.error('Error al registrar Service Worker:', error);
+    return false;
+  }
+};
 
 // Inicializar las notificaciones del navegador
 export const initializeNotifications = async () => {
@@ -15,6 +29,12 @@ export const initializeNotifications = async () => {
     // Verificar si las notificaciones están disponibles
     if (!notificationsAvailable()) {
       console.error("Las notificaciones no están disponibles en este navegador");
+      return false;
+    }
+
+    // Registrar el Service Worker
+    const swRegistered = await registerServiceWorker();
+    if (!swRegistered) {
       return false;
     }
 
@@ -57,15 +77,23 @@ const sendTestNotification = () => {
   try {
     console.log("Enviando notificación de prueba inmediata...");
     
-    const notification = new Notification("¡Notificaciones Activadas!", {
-      body: "Las notificaciones están funcionando correctamente. Recibirás alertas cuando los basureros alcancen niveles críticos.",
-      icon: '/vite.svg'
-    });
-    
-    notification.onclick = () => {
-      window.focus();
-      notification.close();
-    };
+    if (swRegistration) {
+      swRegistration.showNotification("¡Notificaciones Activadas!", {
+        body: "Las notificaciones están funcionando correctamente. Recibirás alertas cuando los basureros alcancen niveles críticos.",
+        icon: '/vite.svg',
+        vibrate: [100, 50, 100]
+      });
+    } else {
+      const notification = new Notification("¡Notificaciones Activadas!", {
+        body: "Las notificaciones están funcionando correctamente. Recibirás alertas cuando los basureros alcancen niveles críticos.",
+        icon: '/vite.svg'
+      });
+      
+      notification.onclick = () => {
+        window.focus();
+        notification.close();
+      };
+    }
     
     console.log("Notificación de prueba enviada");
   } catch (error) {
@@ -94,32 +122,29 @@ export const sendNotification = async (title, message) => {
 
     console.log("Creando notificación:", title, message);
 
-    // Crear y mostrar la notificación
-    const notification = new Notification(title, {
-      body: message,
-      icon: '/vite.svg',
-      badge: '/vite.svg',
-      requireInteraction: true // La notificación permanece hasta que el usuario interactúe con ella
-    });
+    // Crear y mostrar la notificación usando el Service Worker si está disponible
+    if (swRegistration) {
+      await swRegistration.showNotification(title, {
+        body: message,
+        icon: '/vite.svg',
+        badge: '/vite.svg',
+        vibrate: [100, 50, 100],
+        requireInteraction: true
+      });
+    } else {
+      const notification = new Notification(title, {
+        body: message,
+        icon: '/vite.svg',
+        badge: '/vite.svg',
+        requireInteraction: true
+      });
 
-    // Añadir manejadores de eventos
-    notification.onclick = () => {
-      console.log("Notificación clickeada");
-      window.focus();
-      notification.close();
-    };
-
-    notification.onshow = () => {
-      console.log("Notificación mostrada al usuario");
-    };
-
-    notification.onerror = (err) => {
-      console.error("Error al mostrar notificación:", err);
-    };
-
-    notification.onclose = () => {
-      console.log("Notificación cerrada por el usuario");
-    };
+      notification.onclick = () => {
+        console.log("Notificación clickeada");
+        window.focus();
+        notification.close();
+      };
+    }
 
     console.log("Notificación enviada correctamente");
     return true;
