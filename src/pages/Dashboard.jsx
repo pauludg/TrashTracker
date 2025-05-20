@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardHeader, CardContent, CardTitle } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
 import { useToast } from "@/components/ui/use-toast"
-import { Trash2, AlertTriangle, LogOut, RefreshCw, Plus, User, Bell, Menu, ClipboardList } from "lucide-react"
+import { Trash2, AlertTriangle, LogOut, RefreshCw, Plus, User, Bell, Menu, ClipboardList, RotateCw } from "lucide-react"
 import { supabase } from "@/lib/supabase"
 import { BinChart } from "@/components/BinChart"
 import { useNavigate } from "react-router-dom"
@@ -27,6 +27,7 @@ function Dashboard() {
   const navigate = useNavigate()
   const [trashBins, setTrashBins] = useState([])
   const [isLoading, setIsLoading] = useState(true)
+  const [isLoadingEvents, setIsLoadingEvents] = useState(false)
   const [newBinName, setNewBinName] = useState("")
   const [isDialogOpen, setIsDialogOpen] = useState(false)
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
@@ -39,7 +40,9 @@ function Dashboard() {
   const [selectedBinEvents, setSelectedBinEvents] = useState([])
   const previousLevelsRef = useRef({})
   const notificationSentRef = useRef({})
-  const POLLING_INTERVAL = 10000 // 10 segundos
+  const lastEventsFetchRef = useRef(0) // Timestamp de la última actualización de eventos
+  const POLLING_INTERVAL = 5000 // 10 segundos
+  const EVENTS_POLLING_INTERVAL = 5000 // 5 segundos, más frecuente para eventos
 
   const fetchTrashBins = async () => {
     try {
@@ -73,6 +76,106 @@ function Dashboard() {
     }
   }
 
+  const fetchBinEvents = async () => {
+    console.log("Actualizando eventos de basureros...");
+    setIsLoadingEvents(true);
+    try {
+      // Obtener todos los eventos para todos los basureros
+      const { data: eventsData, error: eventsError } = await supabase
+        .from('bin_events')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (eventsError) throw eventsError;
+
+      // Si no hay basureros cargados, no podemos actualizar eventos
+      if (!trashBins || trashBins.length === 0) {
+        console.log("No hay basureros cargados para actualizar eventos");
+        return;
+      }
+
+      // Crear un mapa de ID de basurero -> array de eventos
+      const eventsMap = {};
+      if (eventsData) {
+        eventsData.forEach(event => {
+          if (!eventsMap[event.bin_id]) {
+            eventsMap[event.bin_id] = [];
+          }
+          eventsMap[event.bin_id].push(event);
+        });
+      }
+
+      // Actualizar los basureros con sus eventos
+      const updatedBins = trashBins.map(bin => {
+        // Obtener los eventos de este basurero y ordenarlos por fecha (más recientes primero)
+        const binEvents = (eventsMap[bin.id] || []).sort((a, b) => 
+          new Date(b.created_at) - new Date(a.created_at)
+        );
+        
+        return {
+          ...bin,
+          events: binEvents
+        };
+      });
+
+      console.log(`Eventos actualizados: ${eventsData?.length || 0} eventos totales distribuidos en ${Object.keys(eventsMap).length} basureros`);
+      
+      // Actualizamos directamente el estado con los nuevos datos
+      setTrashBins(updatedBins);
+      
+      // También actualizamos el modal si está abierto
+      if (eventsDialogOpen && selectedBin) {
+        const bin = updatedBins.find(b => b.id === selectedBin.id);
+        if (bin) {
+          setSelectedBinEvents(bin.events || []);
+        }
+      }
+      
+      lastEventsFetchRef.current = Date.now();
+
+    } catch (error) {
+      console.error("Error al actualizar eventos:", error);
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "Error al cargar los eventos de los basureros",
+      });
+    } finally {
+      setIsLoadingEvents(false);
+    }
+  };
+
+  // Nueva función para registrar directamente un evento
+  const registerBinEvent = async (binId, eventType, description) => {
+    try {
+      console.log(`Registrando evento: ${eventType} para basurero ${binId}: ${description}`);
+      
+      const { data, error } = await supabase
+        .from('bin_events')
+        .insert([{
+          bin_id: binId,
+          event_type: eventType,
+          description: description
+        }])
+        .select();
+        
+      if (error) {
+        console.error("Error al registrar evento:", error);
+        return false;
+      }
+      
+      console.log("Evento registrado exitosamente:", data);
+      
+      // Actualizar inmediatamente los eventos
+      fetchBinEvents();
+      
+      return true;
+    } catch (err) {
+      console.error("Error inesperado al registrar evento:", err);
+      return false;
+    }
+  };
+
   const subscribeToUpdates = () => {
     console.log("Iniciando suscripción a cambios en basureros...");
     
@@ -104,9 +207,6 @@ function Dashboard() {
       }, async (payload) => {
         console.log("¡CAMBIO DETECTADO EN BASUREROS!", payload);
         
-        // Para cualquier cambio, primero refrescar los datos
-        await fetchTrashBins();
-        
         // Si es una actualización, verificar cambios
         if (payload.eventType === "UPDATE") {
           const binData = payload.new;
@@ -122,22 +222,12 @@ function Dashboard() {
           if (oldOpenState !== undefined && oldOpenState !== newOpenState) {
             console.log(`Cambio de estado: Basurero ${binData.id} ${newOpenState ? 'abierto' : 'cerrado'}`);
             
-            // Registrar evento de apertura/cierre
-            const { error } = await supabase
-              .from('bin_events')
-              .insert([{
-                bin_id: binData.id,
-                event_type: newOpenState ? 'APERTURA' : 'CIERRE',
-                description: newOpenState ? 'Basurero abierto' : 'Basurero cerrado'
-              }]);
-              
-            if (error) {
-              console.error("Error al registrar evento de apertura/cierre:", error);
-            } else {
-              console.log(`✅ Evento de ${newOpenState ? 'apertura' : 'cierre'} registrado`);
-              // Recargar datos para mostrar el nuevo evento
-              await fetchTrashBins();
-            }
+            // Usar la nueva función para registrar el evento
+            await registerBinEvent(
+              binData.id, 
+              newOpenState ? 'APERTURA' : 'CIERRE',
+              newOpenState ? 'Basurero abierto' : 'Basurero cerrado'
+            );
             
             // Actualizar estado guardado
             openStates[binData.id] = newOpenState;
@@ -149,6 +239,15 @@ function Dashboard() {
           
           if (crossed80Threshold || crossed100Threshold) {
             console.log(`¡UMBRAL CRÍTICO ALCANZADO! ${binData.name || 'Basurero'} pasó de ${oldLevel}% a ${newLevel}%`);
+            
+            // Registrar evento de llenado
+            if (crossed100Threshold) {
+              await registerBinEvent(
+                binData.id,
+                'LLENADO',
+                `Contenedor lleno (${newLevel}%)`
+              );
+            }
             
             // Forzar notificación explícita
             const { sendNotification } = await import("@/lib/notificationService");
@@ -172,6 +271,9 @@ function Dashboard() {
             }
           }
         }
+        
+        // Para cualquier cambio, actualizar datos
+        await fetchTrashBins();
       })
       .subscribe((status) => {
         console.log("Estado de suscripción:", status);
@@ -197,10 +299,19 @@ function Dashboard() {
       }, async (payload) => {
         console.log("¡NUEVO EVENTO DE BASURERO!", payload);
         // Recargar los datos para incluir el nuevo evento
-        await fetchTrashBins();
+        await fetchBinEvents();
       })
       .subscribe((status) => {
         console.log("Estado de suscripción eventos:", status);
+        if (status === 'SUBSCRIBED') {
+          console.log("✅ Suscripción a eventos de basureros activa");
+        } else if (status === 'CLOSED') {
+          console.log("❌ Suscripción a eventos cerrada, intentando reconectar...");
+          setTimeout(() => {
+            console.log("Intentando reconectar eventos...");
+            subscribeToUpdates();
+          }, 5000);
+        }
       });
       
     console.log("Suscripción a basureros configurada correctamente");
@@ -326,8 +437,8 @@ function Dashboard() {
         const updatedBin = data.find(bin => bin.id === currentBin.id);
         
         // Si encontramos el basurero y su nivel ha cambiado
-        if (updatedBin && updatedBin.fill_level !== currentBin.fill_level) {
-          console.log(`Actualizando UI: Basurero ${currentBin.name} cambió de ${currentBin.fill_level}% a ${updatedBin.fill_level}%`);
+        if (updatedBin && (updatedBin.fill_level !== currentBin.fill_level || updatedBin.is_open !== currentBin.is_open)) {
+          console.log(`Actualizando UI: Basurero ${currentBin.name} cambió nivel de ${currentBin.fill_level}% a ${updatedBin.fill_level}% o estado de apertura`);
           interfaceNeedsUpdate = true;
           // Devolver el bin actualizado pero mantener los eventos y otras propiedades
           return {
@@ -345,6 +456,10 @@ function Dashboard() {
       if (interfaceNeedsUpdate) {
         console.log("Actualizando interfaz con nuevos niveles");
         setTrashBins(updatedBins);
+        
+        // Si hubo cambios en los basureros, también actualizamos los eventos
+        // ya que probablemente se generaron nuevos eventos de apertura/cierre
+        fetchBinEvents();
       }
 
       // Verificar cada basurero para notificaciones
@@ -451,6 +566,30 @@ function Dashboard() {
     };
   }, [notificationsEnabled]); // Se reinicia cuando cambia el estado de las notificaciones
 
+  // Nuevo efecto específico para polling de eventos
+  useEffect(() => {
+    let eventsPollingInterval;
+
+    const startEventsPolling = () => {
+      // Primera carga inmediata
+      fetchBinEvents();
+      
+      // Configurar el intervalo
+      eventsPollingInterval = setInterval(fetchBinEvents, EVENTS_POLLING_INTERVAL);
+    };
+
+    if (trashBins.length > 0) {
+      console.log("Iniciando polling de eventos de basureros");
+      startEventsPolling();
+    }
+
+    return () => {
+      if (eventsPollingInterval) {
+        clearInterval(eventsPollingInterval);
+      }
+    };
+  }, [trashBins.length]); // Se reinicia cuando cambia el número de basureros
+
   useEffect(() => {
     let channels = [];
 
@@ -486,10 +625,14 @@ function Dashboard() {
   }, []);
 
   const viewAllEvents = (bin) => {
+    console.log("Abriendo vista de eventos para basurero:", bin.id, bin.name);
+    console.log("Eventos disponibles:", bin.events?.length || 0);
+    
     // Ordenar eventos por fecha de creación (más recientes primero)
     const sortedEvents = [...(bin.events || [])].sort((a, b) => 
       new Date(b.created_at) - new Date(a.created_at)
     );
+    
     setSelectedBinEvents(sortedEvents);
     setEventsDialogOpen(true);
   };
@@ -712,70 +855,76 @@ function Dashboard() {
             </DialogHeader>
             
             <div className="overflow-y-auto flex-1 pr-2">
-              <div className="space-y-2">
-                {selectedBinEvents.length > 0 ? (
-                  selectedBinEvents.map((event, index) => (
-                    <div 
-                      key={index} 
-                      className={`p-3 rounded-lg flex items-start gap-3 ${
-                        event.event_type === 'APERTURA' 
-                          ? 'bg-green-50 border border-green-100' 
-                          : event.event_type === 'CIERRE'
-                            ? 'bg-blue-50 border border-blue-100'
-                            : event.event_type === 'LLENADO'
-                              ? 'bg-red-50 border border-red-100'
-                              : 'bg-white/50 border border-gray-100'
-                      }`}
-                    >
-                      <div className="flex-shrink-0 mt-1">
-                        {event.event_type === 'APERTURA' ? (
-                          <div className="w-6 h-6 rounded-full bg-green-100 flex items-center justify-center">
-                            <span className="text-green-600 text-xs">▲</span>
-                          </div>
-                        ) : event.event_type === 'CIERRE' ? (
-                          <div className="w-6 h-6 rounded-full bg-blue-100 flex items-center justify-center">
-                            <span className="text-blue-600 text-xs">▼</span>
-                          </div>
-                        ) : event.event_type === 'LLENADO' ? (
-                          <div className="w-6 h-6 rounded-full bg-red-100 flex items-center justify-center">
-                            <span className="text-red-600 text-xs">!</span>
-                          </div>
-                        ) : (
-                          <div className="w-6 h-6 rounded-full bg-gray-100 flex items-center justify-center">
-                            <span className="text-gray-600 text-xs">i</span>
-                          </div>
-                        )}
-                      </div>
-                      <div className="flex-1">
-                        <div className="flex justify-between">
-                          <span className={`font-medium ${
-                            event.event_type === 'APERTURA'
-                              ? 'text-green-700'
-                              : event.event_type === 'CIERRE'
-                                ? 'text-blue-700'
-                                : event.event_type === 'LLENADO'
-                                  ? 'text-red-700'
-                                  : 'text-gray-700'
-                          }`}>
-                            {event.event_type || 'Evento'}
-                          </span>
-                          <span 
-                            className="text-xs text-gray-500 whitespace-nowrap"
-                            title={new Date(event.created_at).toLocaleString()}
-                          >
-                            {new Date(event.created_at).toLocaleTimeString()}
-                          </span>
+              {isLoadingEvents ? (
+                <div className="flex justify-center items-center py-8">
+                  <RotateCw className="h-8 w-8 animate-spin text-blue-500" />
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {selectedBinEvents.length > 0 ? (
+                    selectedBinEvents.map((event, index) => (
+                      <div 
+                        key={`event-modal-${event.id || index}`} 
+                        className={`p-3 rounded-lg flex items-start gap-3 ${
+                          event.event_type === 'APERTURA' 
+                            ? 'bg-green-50 border border-green-100' 
+                            : event.event_type === 'CIERRE'
+                              ? 'bg-blue-50 border border-blue-100'
+                              : event.event_type === 'LLENADO'
+                                ? 'bg-red-50 border border-red-100'
+                                : 'bg-white/50 border border-gray-100'
+                        }`}
+                      >
+                        <div className="flex-shrink-0 mt-1">
+                          {event.event_type === 'APERTURA' ? (
+                            <div className="w-6 h-6 rounded-full bg-green-100 flex items-center justify-center">
+                              <span className="text-green-600 text-xs">▲</span>
+                            </div>
+                          ) : event.event_type === 'CIERRE' ? (
+                            <div className="w-6 h-6 rounded-full bg-blue-100 flex items-center justify-center">
+                              <span className="text-blue-600 text-xs">▼</span>
+                            </div>
+                          ) : event.event_type === 'LLENADO' ? (
+                            <div className="w-6 h-6 rounded-full bg-red-100 flex items-center justify-center">
+                              <span className="text-red-600 text-xs">!</span>
+                            </div>
+                          ) : (
+                            <div className="w-6 h-6 rounded-full bg-gray-100 flex items-center justify-center">
+                              <span className="text-gray-600 text-xs">i</span>
+                            </div>
+                          )}
                         </div>
-                        <p className="text-sm mt-1">{event.description}</p>
+                        <div className="flex-1">
+                          <div className="flex justify-between">
+                            <span className={`font-medium ${
+                              event.event_type === 'APERTURA'
+                                ? 'text-green-700'
+                                : event.event_type === 'CIERRE'
+                                  ? 'text-blue-700'
+                                  : event.event_type === 'LLENADO'
+                                    ? 'text-red-700'
+                                    : 'text-gray-700'
+                            }`}>
+                              {event.event_type || 'Evento'}
+                            </span>
+                            <span 
+                              className="text-xs text-gray-500 whitespace-nowrap"
+                              title={new Date(event.created_at).toLocaleString()}
+                            >
+                              {new Date(event.created_at).toLocaleTimeString()}
+                            </span>
+                          </div>
+                          <p className="text-sm mt-1">{event.description}</p>
+                        </div>
                       </div>
+                    ))
+                  ) : (
+                    <div className="text-center py-8 text-gray-500">
+                      No hay eventos registrados para este basurero
                     </div>
-                  ))
-                ) : (
-                  <div className="text-center py-8 text-gray-500">
-                    No hay eventos registrados para este basurero
-                  </div>
-                )}
-              </div>
+                  )}
+                </div>
+              )}
             </div>
             
             <DialogFooter>
@@ -853,21 +1002,33 @@ function Dashboard() {
                         <div className="mt-4">
                           <div className="flex justify-between items-center mb-2">
                             <h4 className="font-semibold text-gray-700">Últimos eventos:</h4>
-                            <Button 
-                              variant="ghost" 
-                              size="sm" 
-                              className="h-7 px-2 text-xs" 
-                              onClick={() => viewAllEvents(bin)}
-                            >
-                              <ClipboardList className="h-3.5 w-3.5 mr-1" />
-                              Ver todos
-                            </Button>
+                            <div className="flex items-center gap-1">
+                              <Button 
+                                variant="ghost" 
+                                size="sm" 
+                                className="h-7 px-2 text-xs" 
+                                onClick={() => fetchBinEvents()}
+                                title="Actualizar eventos"
+                                disabled={isLoadingEvents}
+                              >
+                                <RotateCw className={`h-3.5 w-3.5 ${isLoadingEvents ? 'animate-spin' : ''}`} />
+                              </Button>
+                              <Button 
+                                variant="ghost" 
+                                size="sm" 
+                                className="h-7 px-2 text-xs" 
+                                onClick={() => viewAllEvents(bin)}
+                              >
+                                <ClipboardList className="h-3.5 w-3.5 mr-1" />
+                                Ver todos
+                              </Button>
+                            </div>
                           </div>
                           <div className="space-y-2 max-h-32 overflow-y-auto">
                             {bin.events && bin.events.length > 0 ? (
                               bin.events.slice(0, 5).map((event, index) => (
                                 <div 
-                                  key={index} 
+                                  key={`event-${event.id || index}`} 
                                   className={`text-sm rounded-lg p-2 flex items-center gap-2 ${
                                     event.event_type === 'APERTURA' 
                                       ? 'bg-green-50 border border-green-100' 
