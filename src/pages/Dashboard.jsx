@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react"
+import React, { useState, useEffect, useRef } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { useAuth } from "@/contexts/AuthContext"
 import { Button } from "@/components/ui/button"
@@ -35,7 +35,8 @@ function Dashboard() {
   const [menuOpen, setMenuOpen] = useState(false)
   const [mobileDialogOpen, setMobileDialogOpen] = useState(false)
   const [testingNotification, setTestingNotification] = useState(false)
-  const [previousLevels, setPreviousLevels] = useState({})
+  const previousLevelsRef = useRef({})
+  const notificationSentRef = useRef({})
   const POLLING_INTERVAL = 10000 // 10 segundos
 
   const fetchTrashBins = async () => {
@@ -367,6 +368,8 @@ function Dashboard() {
   // Función para verificar cambios en los niveles
   const checkLevelChanges = async () => {
     try {
+      console.log("Verificando niveles de basureros...");
+      
       const { data, error } = await supabase
         .from('trash_bins')
         .select('*');
@@ -375,43 +378,78 @@ function Dashboard() {
 
       // Verificar cada basurero
       data.forEach(bin => {
-        const oldLevel = previousLevels[bin.id] || 0;
+        const oldLevel = previousLevelsRef.current[bin.id] || 0;
         const newLevel = bin.fill_level;
+        
+        console.log(`Basurero ${bin.name}: Nivel anterior ${oldLevel}%, nivel actual ${newLevel}%`);
 
-        // Solo proceder si el nivel ha cambiado
-        if (oldLevel !== newLevel) {
-          console.log(`Cambio detectado en ${bin.name}: ${oldLevel}% -> ${newLevel}%`);
+        // Verificar si cruzó algún umbral crítico
+        const crossed80Threshold = newLevel >= 80;
+        const crossed100Threshold = newLevel >= 100;
+        
+        // ID únicos para cada umbral y basurero
+        const threshold80Id = `${bin.id}_80`;
+        const threshold100Id = `${bin.id}_100`;
+        
+        // Para el umbral de 80%
+        if (crossed80Threshold && !notificationSentRef.current[threshold80Id]) {
+          console.log(`Enviando notificación para umbral 80%: ${bin.name}`);
+          
+          const message = `⚠️ El basurero ${bin.name} está alcanzando su capacidad máxima (${newLevel}%). Por favor planifique vaciarlo pronto.`;
 
-          // Verificar si cruzó algún umbral crítico
-          const crossed80Threshold = oldLevel < 80 && newLevel >= 80;
-          const crossed100Threshold = oldLevel < 100 && newLevel >= 100;
+          sendNotification("TrashTracker Alerta", message).then(success => {
+            if (success) {
+              // Marcar que ya se envió esta notificación
+              notificationSentRef.current[threshold80Id] = true;
+              console.log(`✅ Notificación umbral 80% enviada para ${bin.name}`);
+            } else {
+              toast({
+                title: "¡Alerta de capacidad!",
+                description: message,
+                variant: "default",
+              });
+            }
+          });
+        } 
+        // Para el umbral de 100%
+        else if (crossed100Threshold && !notificationSentRef.current[threshold100Id]) {
+          console.log(`Enviando notificación para umbral 100%: ${bin.name}`);
+          
+          const message = `🚨 ¡ALERTA CRÍTICA! El basurero ${bin.name} está LLENO (${newLevel}%). Requiere atención inmediata.`;
 
-          if (crossed80Threshold || crossed100Threshold) {
-            console.log(`¡UMBRAL CRÍTICO ALCANZADO! ${bin.name} pasó de ${oldLevel}% a ${newLevel}%`);
-            
-            const message = crossed100Threshold
-              ? `🚨 ¡ALERTA CRÍTICA! El basurero ${bin.name} está LLENO (${newLevel}%). Requiere atención inmediata.`
-              : `⚠️ El basurero ${bin.name} está alcanzando su capacidad máxima (${newLevel}%). Por favor planifique vaciarlo pronto.`;
-
-            sendNotification("TrashTracker Alerta", message).then(success => {
-              if (!success) {
-                toast({
-                  title: crossed100Threshold ? "¡ALERTA CRÍTICA!" : "¡Alerta de capacidad!",
-                  description: message,
-                  variant: crossed100Threshold ? "destructive" : "default",
-                });
-              }
-            });
-          }
+          sendNotification("TrashTracker Alerta", message).then(success => {
+            if (success) {
+              // Marcar que ya se envió esta notificación
+              notificationSentRef.current[threshold100Id] = true;
+              console.log(`✅ Notificación umbral 100% enviada para ${bin.name}`);
+            } else {
+              toast({
+                title: "¡ALERTA CRÍTICA!",
+                description: message,
+                variant: "destructive",
+              });
+            }
+          });
         }
-      });
+        
+        // Si el nivel baja por debajo del umbral, resetear el estado para poder enviar notificaciones nuevamente
+        if (newLevel < 80) {
+          if (notificationSentRef.current[threshold80Id]) {
+            console.log(`Nivel por debajo de 80% para ${bin.name}, reseteando estado de notificación`);
+            notificationSentRef.current[threshold80Id] = false;
+          }
+          if (notificationSentRef.current[threshold100Id]) {
+            console.log(`Nivel por debajo de 100% para ${bin.name}, reseteando estado de notificación`);
+            notificationSentRef.current[threshold100Id] = false;
+          }
+        } else if (newLevel < 100 && notificationSentRef.current[threshold100Id]) {
+          console.log(`Nivel por debajo de 100% para ${bin.name}, reseteando estado de notificación`);
+          notificationSentRef.current[threshold100Id] = false;
+        }
 
-      // Actualizar los niveles anteriores
-      const newLevels = {};
-      data.forEach(bin => {
-        newLevels[bin.id] = bin.fill_level;
+        // Actualizar el nivel anterior de este basurero
+        previousLevelsRef.current[bin.id] = newLevel;
       });
-      setPreviousLevels(newLevels);
 
     } catch (error) {
       console.error("Error al verificar niveles:", error);
