@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardHeader, CardContent, CardTitle } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
 import { useToast } from "@/components/ui/use-toast"
-import { Trash2, AlertTriangle, LogOut, RefreshCw, Plus, User, Bell, Menu } from "lucide-react"
+import { Trash2, AlertTriangle, LogOut, RefreshCw, Plus, User, Bell, Menu, ClipboardList } from "lucide-react"
 import { supabase } from "@/lib/supabase"
 import { BinChart } from "@/components/BinChart"
 import { useNavigate } from "react-router-dom"
@@ -35,6 +35,8 @@ function Dashboard() {
   const [menuOpen, setMenuOpen] = useState(false)
   const [mobileDialogOpen, setMobileDialogOpen] = useState(false)
   const [testingNotification, setTestingNotification] = useState(false)
+  const [eventsDialogOpen, setEventsDialogOpen] = useState(false)
+  const [selectedBinEvents, setSelectedBinEvents] = useState([])
   const previousLevelsRef = useRef({})
   const notificationSentRef = useRef({})
   const POLLING_INTERVAL = 10000 // 10 segundos
@@ -54,7 +56,10 @@ function Dashboard() {
 
       setTrashBins(data?.map(bin => ({
         ...bin,
-        events: bin.bin_events || []
+        // Ordenar eventos por fecha de creación (más recientes primero)
+        events: (bin.bin_events || []).sort((a, b) => 
+          new Date(b.created_at) - new Date(a.created_at)
+        )
       })) || [])
     } catch (error) {
       console.error("Error fetching bins:", error)
@@ -83,6 +88,12 @@ function Dashboard() {
     
     const previousLevels = getBinLevels();
     
+    // Para seguimiento de estados de apertura/cierre
+    const openStates = {};
+    trashBins.forEach(bin => {
+      openStates[bin.id] = bin.is_open;
+    });
+    
     // Crear y configurar el canal
     const channel = supabase
       .channel('trash_bins_channel')
@@ -96,14 +107,41 @@ function Dashboard() {
         // Para cualquier cambio, primero refrescar los datos
         await fetchTrashBins();
         
-        // Si es una actualización, verificar si cruzó umbrales
+        // Si es una actualización, verificar cambios
         if (payload.eventType === "UPDATE") {
           const binData = payload.new;
           const oldLevel = previousLevels[binData.id] || 0;
           const newLevel = binData.fill_level;
+          const oldOpenState = openStates[binData.id];
+          const newOpenState = binData.is_open;
           
           console.log(`Basurero ${binData.id}: Nivel anterior ${oldLevel}%, nuevo nivel ${newLevel}%`);
           previousLevels[binData.id] = newLevel; // Actualizar para la próxima vez
+          
+          // Verificar si el estado de apertura cambió
+          if (oldOpenState !== undefined && oldOpenState !== newOpenState) {
+            console.log(`Cambio de estado: Basurero ${binData.id} ${newOpenState ? 'abierto' : 'cerrado'}`);
+            
+            // Registrar evento de apertura/cierre
+            const { error } = await supabase
+              .from('bin_events')
+              .insert([{
+                bin_id: binData.id,
+                event_type: newOpenState ? 'APERTURA' : 'CIERRE',
+                description: newOpenState ? 'Basurero abierto' : 'Basurero cerrado'
+              }]);
+              
+            if (error) {
+              console.error("Error al registrar evento de apertura/cierre:", error);
+            } else {
+              console.log(`✅ Evento de ${newOpenState ? 'apertura' : 'cierre'} registrado`);
+              // Recargar datos para mostrar el nuevo evento
+              await fetchTrashBins();
+            }
+            
+            // Actualizar estado guardado
+            openStates[binData.id] = newOpenState;
+          }
           
           // Verificar si cruzó algún umbral crítico
           const crossed80Threshold = oldLevel < 80 && newLevel >= 80;
@@ -149,8 +187,24 @@ function Dashboard() {
         }
       });
       
+    // Crear y configurar el canal para eventos de basurero
+    const eventsChannel = supabase
+      .channel('bin_events_channel')
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'bin_events'
+      }, async (payload) => {
+        console.log("¡NUEVO EVENTO DE BASURERO!", payload);
+        // Recargar los datos para incluir el nuevo evento
+        await fetchTrashBins();
+      })
+      .subscribe((status) => {
+        console.log("Estado de suscripción eventos:", status);
+      });
+      
     console.log("Suscripción a basureros configurada correctamente");
-    return channel;
+    return [channel, eventsChannel]; // Devolver ambos canales
   }
 
   const createNewBin = async () => {
@@ -398,12 +452,12 @@ function Dashboard() {
   }, [notificationsEnabled]); // Se reinicia cuando cambia el estado de las notificaciones
 
   useEffect(() => {
-    let channel = null;
+    let channels = [];
 
     const setup = async () => {
       try {
         await fetchTrashBins();
-        channel = subscribeToUpdates();
+        channels = subscribeToUpdates();
         
         // Verificar permisos de notificación al inicio
         const hasPermission = await checkNotificationPermission();
@@ -422,12 +476,23 @@ function Dashboard() {
 
     // Limpiar la suscripción cuando el componente se desmonte
     return () => {
-      if (channel) {
-        console.log("Limpiando suscripción a cambios en basureros...");
-        channel.unsubscribe();
+      if (channels && channels.length) {
+        console.log("Limpiando suscripciones...");
+        channels.forEach(channel => {
+          if (channel) channel.unsubscribe();
+        });
       }
     };
   }, []);
+
+  const viewAllEvents = (bin) => {
+    // Ordenar eventos por fecha de creación (más recientes primero)
+    const sortedEvents = [...(bin.events || [])].sort((a, b) => 
+      new Date(b.created_at) - new Date(a.created_at)
+    );
+    setSelectedBinEvents(sortedEvents);
+    setEventsDialogOpen(true);
+  };
 
   if (!user) {
     return null
@@ -637,6 +702,90 @@ function Dashboard() {
           </DialogContent>
         </Dialog>
 
+        <Dialog open={eventsDialogOpen} onOpenChange={setEventsDialogOpen}>
+          <DialogContent className="max-w-3xl max-h-[80vh] overflow-hidden flex flex-col">
+            <DialogHeader>
+              <DialogTitle>Historial de eventos</DialogTitle>
+              <DialogDescription>
+                Registro completo de los eventos del basurero
+              </DialogDescription>
+            </DialogHeader>
+            
+            <div className="overflow-y-auto flex-1 pr-2">
+              <div className="space-y-2">
+                {selectedBinEvents.length > 0 ? (
+                  selectedBinEvents.map((event, index) => (
+                    <div 
+                      key={index} 
+                      className={`p-3 rounded-lg flex items-start gap-3 ${
+                        event.event_type === 'APERTURA' 
+                          ? 'bg-green-50 border border-green-100' 
+                          : event.event_type === 'CIERRE'
+                            ? 'bg-blue-50 border border-blue-100'
+                            : event.event_type === 'LLENADO'
+                              ? 'bg-red-50 border border-red-100'
+                              : 'bg-white/50 border border-gray-100'
+                      }`}
+                    >
+                      <div className="flex-shrink-0 mt-1">
+                        {event.event_type === 'APERTURA' ? (
+                          <div className="w-6 h-6 rounded-full bg-green-100 flex items-center justify-center">
+                            <span className="text-green-600 text-xs">▲</span>
+                          </div>
+                        ) : event.event_type === 'CIERRE' ? (
+                          <div className="w-6 h-6 rounded-full bg-blue-100 flex items-center justify-center">
+                            <span className="text-blue-600 text-xs">▼</span>
+                          </div>
+                        ) : event.event_type === 'LLENADO' ? (
+                          <div className="w-6 h-6 rounded-full bg-red-100 flex items-center justify-center">
+                            <span className="text-red-600 text-xs">!</span>
+                          </div>
+                        ) : (
+                          <div className="w-6 h-6 rounded-full bg-gray-100 flex items-center justify-center">
+                            <span className="text-gray-600 text-xs">i</span>
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex-1">
+                        <div className="flex justify-between">
+                          <span className={`font-medium ${
+                            event.event_type === 'APERTURA'
+                              ? 'text-green-700'
+                              : event.event_type === 'CIERRE'
+                                ? 'text-blue-700'
+                                : event.event_type === 'LLENADO'
+                                  ? 'text-red-700'
+                                  : 'text-gray-700'
+                          }`}>
+                            {event.event_type || 'Evento'}
+                          </span>
+                          <span 
+                            className="text-xs text-gray-500 whitespace-nowrap"
+                            title={new Date(event.created_at).toLocaleString()}
+                          >
+                            {new Date(event.created_at).toLocaleTimeString()}
+                          </span>
+                        </div>
+                        <p className="text-sm mt-1">{event.description}</p>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-center py-8 text-gray-500">
+                    No hay eventos registrados para este basurero
+                  </div>
+                )}
+              </div>
+            </div>
+            
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setEventsDialogOpen(false)}>
+                Cerrar
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6">
           <AnimatePresence>
             {isLoading ? (
@@ -702,19 +851,55 @@ function Dashboard() {
                         </div>
 
                         <div className="mt-4">
-                          <h4 className="font-semibold mb-2 text-gray-700">Últimos eventos:</h4>
+                          <div className="flex justify-between items-center mb-2">
+                            <h4 className="font-semibold text-gray-700">Últimos eventos:</h4>
+                            <Button 
+                              variant="ghost" 
+                              size="sm" 
+                              className="h-7 px-2 text-xs" 
+                              onClick={() => viewAllEvents(bin)}
+                            >
+                              <ClipboardList className="h-3.5 w-3.5 mr-1" />
+                              Ver todos
+                            </Button>
+                          </div>
                           <div className="space-y-2 max-h-32 overflow-y-auto">
-                            {bin.events.slice(0, 5).map((event, index) => (
-                              <div 
-                                key={index} 
-                                className="text-sm bg-white/50 rounded-lg p-2 flex items-center gap-2"
-                              >
-                                <span className="text-xs text-gray-500 whitespace-nowrap">
-                                  {new Date(event.created_at).toLocaleTimeString()}
-                                </span>
-                                <span className="text-gray-700">{event.description}</span>
-                              </div>
-                            ))}
+                            {bin.events && bin.events.length > 0 ? (
+                              bin.events.slice(0, 5).map((event, index) => (
+                                <div 
+                                  key={index} 
+                                  className={`text-sm rounded-lg p-2 flex items-center gap-2 ${
+                                    event.event_type === 'APERTURA' 
+                                      ? 'bg-green-50 border border-green-100' 
+                                      : event.event_type === 'CIERRE'
+                                        ? 'bg-blue-50 border border-blue-100'
+                                        : event.event_type === 'LLENADO'
+                                          ? 'bg-red-50 border border-red-100'
+                                          : 'bg-white/50'
+                                  }`}
+                                >
+                                  <span 
+                                    className="text-xs text-gray-500 whitespace-nowrap"
+                                    title={new Date(event.created_at).toLocaleString()}
+                                  >
+                                    {new Date(event.created_at).toLocaleTimeString()}
+                                  </span>
+                                  <span className={`${
+                                    event.event_type === 'APERTURA'
+                                      ? 'text-green-700'
+                                      : event.event_type === 'CIERRE'
+                                        ? 'text-blue-700'
+                                        : event.event_type === 'LLENADO'
+                                          ? 'text-red-700'
+                                          : 'text-gray-700'
+                                  }`}>
+                                    {event.description}
+                                  </span>
+                                </div>
+                              ))
+                            ) : (
+                              <div className="text-sm text-gray-500 italic">No hay eventos registrados</div>
+                            )}
                           </div>
                         </div>
                       </div>
