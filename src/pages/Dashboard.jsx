@@ -35,6 +35,8 @@ function Dashboard() {
   const [menuOpen, setMenuOpen] = useState(false)
   const [mobileDialogOpen, setMobileDialogOpen] = useState(false)
   const [testingNotification, setTestingNotification] = useState(false)
+  const [previousLevels, setPreviousLevels] = useState({})
+  const POLLING_INTERVAL = 10000 // 10 segundos
 
   const fetchTrashBins = async () => {
     try {
@@ -361,6 +363,79 @@ function Dashboard() {
       setIsLoading(false);
     }
   };
+
+  // Función para verificar cambios en los niveles
+  const checkLevelChanges = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('trash_bins')
+        .select('*');
+
+      if (error) throw error;
+
+      // Verificar cada basurero
+      data.forEach(bin => {
+        const oldLevel = previousLevels[bin.id] || 0;
+        const newLevel = bin.fill_level;
+
+        // Verificar si cruzó algún umbral crítico
+        const crossed80Threshold = oldLevel < 80 && newLevel >= 80;
+        const crossed100Threshold = oldLevel < 100 && newLevel >= 100;
+
+        if (crossed80Threshold || crossed100Threshold) {
+          console.log(`¡UMBRAL CRÍTICO ALCANZADO! ${bin.name} pasó de ${oldLevel}% a ${newLevel}%`);
+          
+          const message = crossed100Threshold
+            ? `🚨 ¡ALERTA CRÍTICA! El basurero ${bin.name} está LLENO (${newLevel}%). Requiere atención inmediata.`
+            : `⚠️ El basurero ${bin.name} está alcanzando su capacidad máxima (${newLevel}%). Por favor planifique vaciarlo pronto.`;
+
+          sendNotification("TrashTracker Alerta", message).then(success => {
+            if (!success) {
+              toast({
+                title: crossed100Threshold ? "¡ALERTA CRÍTICA!" : "¡Alerta de capacidad!",
+                description: message,
+                variant: crossed100Threshold ? "destructive" : "default",
+              });
+            }
+          });
+        }
+      });
+
+      // Actualizar los niveles anteriores
+      const newLevels = {};
+      data.forEach(bin => {
+        newLevels[bin.id] = bin.fill_level;
+      });
+      setPreviousLevels(newLevels);
+
+    } catch (error) {
+      console.error("Error al verificar niveles:", error);
+    }
+  };
+
+  // Efecto para el polling
+  useEffect(() => {
+    let pollingInterval;
+
+    const startPolling = () => {
+      // Primera verificación inmediata
+      checkLevelChanges();
+      
+      // Configurar el intervalo
+      pollingInterval = setInterval(checkLevelChanges, POLLING_INTERVAL);
+    };
+
+    if (notificationsEnabled) {
+      startPolling();
+    }
+
+    // Limpiar el intervalo cuando el componente se desmonte o las notificaciones se desactiven
+    return () => {
+      if (pollingInterval) {
+        clearInterval(pollingInterval);
+      }
+    };
+  }, [notificationsEnabled]); // Se reinicia cuando cambia el estado de las notificaciones
 
   useEffect(() => {
     let channel = null;
