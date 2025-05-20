@@ -15,8 +15,6 @@ function Profile() {
   const [fullName, setFullName] = useState("")
   const [phoneNumber, setPhoneNumber] = useState("")
   const [isLoading, setIsLoading] = useState(true)
-  const [isLoadingTable, setIsLoadingTable] = useState(false)
-  const [tableError, setTableError] = useState(null)
 
   useEffect(() => {
     if (user) {
@@ -59,36 +57,6 @@ function Profile() {
       })
     } finally {
       setIsLoading(false)
-    }
-  }
-
-  const fetchUserFromTable = async () => {
-    setIsLoadingTable(true)
-    setTableError(null)
-    try {
-      const { data, error } = await supabase
-        .from('users')
-        .select('full_name, phone_number, email')
-        .eq('id', user.id)
-        .single()
-
-      if (error) throw error
-
-      console.log("Datos de la tabla users:", data)
-      toast({
-        title: "Datos obtenidos",
-        description: "Se han recuperado los datos de la tabla users correctamente.",
-      })
-    } catch (error) {
-      console.error("Error al obtener datos de tabla:", error)
-      setTableError(error.message)
-      toast({
-        variant: "destructive",
-        title: "Error",
-        description: "Error al obtener datos de la tabla: " + error.message,
-      })
-    } finally {
-      setIsLoadingTable(false)
     }
   }
 
@@ -153,21 +121,6 @@ function Profile() {
             >
               Guardar Cambios
             </Button>
-            
-            <div className="pt-4 border-t">
-              <p className="text-sm text-gray-500 mb-2">Diagnóstico de la tabla users:</p>
-              <Button 
-                variant="outline" 
-                className="w-full"
-                onClick={fetchUserFromTable}
-                disabled={isLoadingTable}
-              >
-                {isLoadingTable ? "Cargando..." : "Probar conexión a tabla users"}
-              </Button>
-              {tableError && (
-                <p className="mt-2 text-sm text-red-500">{tableError}</p>
-              )}
-            </div>
           </CardContent>
         </Card>
       </div>

@@ -251,120 +251,6 @@ function Dashboard() {
     }
   }
 
-  const testNotification = async () => {
-    try {
-      setTestingNotification(true);
-      console.log("Probando sistema de notificaciones del navegador...");
-      
-      // Si el usuario no está autenticado, no podemos continuar
-      if (!user) {
-        toast({
-          variant: "destructive",
-          title: "Error",
-          description: "Debes iniciar sesión para probar las notificaciones.",
-        });
-        return;
-      }
-      
-      // Importar el servicio de notificaciones
-      const { testBrowserNotification } = await import("@/lib/notificationService");
-      
-      // Probar notificación
-      const testResult = await testBrowserNotification();
-      console.log("Resultado de prueba de notificación:", testResult);
-      
-      // Mostrar resultado en la interfaz
-      if (testResult.success) {
-        toast({
-          title: "Prueba de notificaciones enviada",
-          description: "La notificación de prueba se ha enviado correctamente. ¿La ves en tu navegador?",
-        });
-      } else {
-        toast({
-          variant: "destructive",
-          title: "Error en prueba",
-          description: "No se pudo enviar la notificación. Por favor, verifica los permisos de tu navegador.",
-        });
-      }
-    } catch (error) {
-      console.error("Error al probar notificaciones:", error);
-      toast({
-        variant: "destructive",
-        title: "Error",
-        description: "Ocurrió un error al probar las notificaciones: " + error.message,
-      });
-    } finally {
-      setTestingNotification(false);
-    }
-  };
-
-  const simulateBinLevelChange = async (binId, newLevel) => {
-    try {
-      setIsLoading(true);
-      
-      // Buscar el bin actual para comparar
-      const currentBin = trashBins.find(bin => bin.id === binId);
-      if (!currentBin) {
-        throw new Error("Basurero no encontrado");
-      }
-      
-      const oldLevel = currentBin.fill_level;
-      console.log(`Simulando cambio: Basurero "${currentBin.name}" de ${oldLevel}% a ${newLevel}%`);
-      
-      // Verificar si cruza algún umbral importante
-      const willCross80 = oldLevel < 80 && newLevel >= 80;
-      const willCross100 = oldLevel < 100 && newLevel >= 100;
-      
-      if (willCross80 || willCross100) {
-        console.log(`⚠️ Esta simulación cruzará un umbral crítico (${willCross100 ? '100%' : '80%'})`);
-      }
-      
-      // Actualizar el nivel en la base de datos
-      const { error } = await supabase
-        .from('trash_bins')
-        .update({ 
-          fill_level: newLevel,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', binId);
-        
-      if (error) throw error;
-      
-      console.log("✅ Nivel actualizado correctamente en la base de datos");
-      
-      // Mostrar mensaje de éxito
-      toast({
-        title: "Simulación completada",
-        description: `Nivel de basurero actualizado a ${newLevel}%`,
-      });
-      
-      // La actualización debería disparar la suscripción automáticamente
-      // Sin embargo, también forzamos una notificación inmediata si cruza un umbral
-      if (willCross80 || willCross100) {
-        setTimeout(async () => {
-          console.log("Enviando notificación explícita por umbral cruzado...");
-          
-          const { sendNotification } = await import("@/lib/notificationService");
-          const message = willCross100
-            ? `🚨 ¡ALERTA CRÍTICA! El basurero ${currentBin.name} ha alcanzado su capacidad máxima (${newLevel}%). Requiere atención inmediata.`
-            : `⚠️ El basurero ${currentBin.name} está alcanzando su capacidad máxima (${newLevel}%). Por favor planifique vaciarlo pronto.`;
-            
-          await sendNotification("TrashTracker Alerta", message);
-        }, 1000);
-      }
-      
-    } catch (error) {
-      console.error("Error al simular cambio de nivel:", error);
-      toast({
-        variant: "destructive",
-        title: "Error",
-        description: "Error al simular cambio: " + error.message,
-      });
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
   // Función para verificar cambios en los niveles
   const checkLevelChanges = async () => {
     try {
@@ -619,25 +505,6 @@ function Dashboard() {
             <Button
               variant="outline"
               className="flex items-center gap-2"
-              onClick={testNotification}
-              disabled={testingNotification}
-            >
-              {testingNotification ? (
-                <>
-                  <RefreshCw className="w-4 h-4 animate-spin" />
-                  Probando...
-                </>
-              ) : (
-                <>
-                  <Bell className="w-4 h-4" />
-                  Probar Notificaciones
-                </>
-              )}
-            </Button>
-            
-            <Button
-              variant="outline"
-              className="flex items-center gap-2"
               onClick={() => navigate("/profile")}
             >
               <User className="w-4 h-4" />
@@ -791,40 +658,6 @@ function Dashboard() {
                     <CardContent>
                       <div className="space-y-4">
                         <BinChart fillLevel={bin.fill_level} />
-
-                        {/* Botones de simulación */}
-                        <div className="grid grid-cols-2 gap-2 mt-2">
-                          <Button 
-                            size="sm" 
-                            variant="outline"
-                            onClick={() => simulateBinLevelChange(bin.id, 60)}
-                          >
-                            Simular 60%
-                          </Button>
-                          <Button 
-                            size="sm" 
-                            variant="outline"
-                            className="bg-yellow-50 border-yellow-200"
-                            onClick={() => simulateBinLevelChange(bin.id, 85)}
-                          >
-                            Simular 85%
-                          </Button>
-                          <Button 
-                            size="sm" 
-                            variant="outline"
-                            className="bg-red-50 border-red-200"
-                            onClick={() => simulateBinLevelChange(bin.id, 100)}
-                          >
-                            Simular 100%
-                          </Button>
-                          <Button 
-                            size="sm" 
-                            variant="outline"
-                            onClick={() => simulateBinLevelChange(bin.id, 0)}
-                          >
-                            Vaciar (0%)
-                          </Button>
-                        </div>
 
                         <div className="flex items-center justify-center gap-2 mt-4">
                           <span>Estado:</span>
