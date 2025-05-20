@@ -262,7 +262,38 @@ function Dashboard() {
 
       if (error) throw error;
 
-      // Verificar cada basurero
+      // Verificar si hay cambios en los niveles para actualizar la interfaz
+      let interfaceNeedsUpdate = false;
+      
+      // Comparar con los datos actuales en la interfaz
+      const currentBins = [...trashBins];
+      const updatedBins = currentBins.map(currentBin => {
+        // Buscar el mismo basurero en los datos nuevos
+        const updatedBin = data.find(bin => bin.id === currentBin.id);
+        
+        // Si encontramos el basurero y su nivel ha cambiado
+        if (updatedBin && updatedBin.fill_level !== currentBin.fill_level) {
+          console.log(`Actualizando UI: Basurero ${currentBin.name} cambió de ${currentBin.fill_level}% a ${updatedBin.fill_level}%`);
+          interfaceNeedsUpdate = true;
+          // Devolver el bin actualizado pero mantener los eventos y otras propiedades
+          return {
+            ...currentBin,
+            fill_level: updatedBin.fill_level,
+            is_open: updatedBin.is_open,
+            updated_at: updatedBin.updated_at
+          };
+        }
+        // Si no ha cambiado, devolver el mismo
+        return currentBin;
+      });
+      
+      // Actualizar la interfaz solo si hay cambios
+      if (interfaceNeedsUpdate) {
+        console.log("Actualizando interfaz con nuevos niveles");
+        setTrashBins(updatedBins);
+      }
+
+      // Verificar cada basurero para notificaciones
       data.forEach(bin => {
         const oldLevel = previousLevelsRef.current[bin.id] || 0;
         const newLevel = bin.fill_level;
