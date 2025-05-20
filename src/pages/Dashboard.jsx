@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardHeader, CardContent, CardTitle } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
 import { useToast } from "@/components/ui/use-toast"
-import { Trash2, AlertTriangle, LogOut, RefreshCw, Plus, User, Bell, Menu, ClipboardList, RotateCw } from "lucide-react"
+import { Trash2, AlertTriangle, LogOut, RefreshCw, Plus, User, Bell, Menu } from "lucide-react"
 import { supabase } from "@/lib/supabase"
 import { BinChart } from "@/components/BinChart"
 import { useNavigate } from "react-router-dom"
@@ -27,7 +27,6 @@ function Dashboard() {
   const navigate = useNavigate()
   const [trashBins, setTrashBins] = useState([])
   const [isLoading, setIsLoading] = useState(true)
-  const [isLoadingEvents, setIsLoadingEvents] = useState(false)
   const [newBinName, setNewBinName] = useState("")
   const [isDialogOpen, setIsDialogOpen] = useState(false)
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
@@ -36,13 +35,9 @@ function Dashboard() {
   const [menuOpen, setMenuOpen] = useState(false)
   const [mobileDialogOpen, setMobileDialogOpen] = useState(false)
   const [testingNotification, setTestingNotification] = useState(false)
-  const [eventsDialogOpen, setEventsDialogOpen] = useState(false)
-  const [selectedBinEvents, setSelectedBinEvents] = useState([])
   const previousLevelsRef = useRef({})
   const notificationSentRef = useRef({})
-  const lastEventsFetchRef = useRef(0) // Timestamp de la última actualización de eventos
-  const POLLING_INTERVAL = 5000 // 10 segundos
-  const EVENTS_POLLING_INTERVAL = 5000 // 5 segundos, más frecuente para eventos
+  const POLLING_INTERVAL = 10000 // 10 segundos
 
   const fetchTrashBins = async () => {
     try {
@@ -59,10 +54,7 @@ function Dashboard() {
 
       setTrashBins(data?.map(bin => ({
         ...bin,
-        // Ordenar eventos por fecha de creación (más recientes primero)
-        events: (bin.bin_events || []).sort((a, b) => 
-          new Date(b.created_at) - new Date(a.created_at)
-        )
+        events: bin.bin_events || []
       })) || [])
     } catch (error) {
       console.error("Error fetching bins:", error)
@@ -75,106 +67,6 @@ function Dashboard() {
       setIsLoading(false)
     }
   }
-
-  const fetchBinEvents = async () => {
-    console.log("Actualizando eventos de basureros...");
-    setIsLoadingEvents(true);
-    try {
-      // Obtener todos los eventos para todos los basureros
-      const { data: eventsData, error: eventsError } = await supabase
-        .from('bin_events')
-        .select('*')
-        .order('created_at', { ascending: false });
-
-      if (eventsError) throw eventsError;
-
-      // Si no hay basureros cargados, no podemos actualizar eventos
-      if (!trashBins || trashBins.length === 0) {
-        console.log("No hay basureros cargados para actualizar eventos");
-        return;
-      }
-
-      // Crear un mapa de ID de basurero -> array de eventos
-      const eventsMap = {};
-      if (eventsData) {
-        eventsData.forEach(event => {
-          if (!eventsMap[event.bin_id]) {
-            eventsMap[event.bin_id] = [];
-          }
-          eventsMap[event.bin_id].push(event);
-        });
-      }
-
-      // Actualizar los basureros con sus eventos
-      const updatedBins = trashBins.map(bin => {
-        // Obtener los eventos de este basurero y ordenarlos por fecha (más recientes primero)
-        const binEvents = (eventsMap[bin.id] || []).sort((a, b) => 
-          new Date(b.created_at) - new Date(a.created_at)
-        );
-        
-        return {
-          ...bin,
-          events: binEvents
-        };
-      });
-
-      console.log(`Eventos actualizados: ${eventsData?.length || 0} eventos totales distribuidos en ${Object.keys(eventsMap).length} basureros`);
-      
-      // Actualizamos directamente el estado con los nuevos datos
-      setTrashBins(updatedBins);
-      
-      // También actualizamos el modal si está abierto
-      if (eventsDialogOpen && selectedBin) {
-        const bin = updatedBins.find(b => b.id === selectedBin.id);
-        if (bin) {
-          setSelectedBinEvents(bin.events || []);
-        }
-      }
-      
-      lastEventsFetchRef.current = Date.now();
-
-    } catch (error) {
-      console.error("Error al actualizar eventos:", error);
-      toast({
-        variant: "destructive",
-        title: "Error",
-        description: "Error al cargar los eventos de los basureros",
-      });
-    } finally {
-      setIsLoadingEvents(false);
-    }
-  };
-
-  // Nueva función para registrar directamente un evento
-  const registerBinEvent = async (binId, eventType, description) => {
-    try {
-      console.log(`Registrando evento: ${eventType} para basurero ${binId}: ${description}`);
-      
-      const { data, error } = await supabase
-        .from('bin_events')
-        .insert([{
-          bin_id: binId,
-          event_type: eventType,
-          description: description
-        }])
-        .select();
-        
-      if (error) {
-        console.error("Error al registrar evento:", error);
-        return false;
-      }
-      
-      console.log("Evento registrado exitosamente:", data);
-      
-      // Actualizar inmediatamente los eventos
-      fetchBinEvents();
-      
-      return true;
-    } catch (err) {
-      console.error("Error inesperado al registrar evento:", err);
-      return false;
-    }
-  };
 
   const subscribeToUpdates = () => {
     console.log("Iniciando suscripción a cambios en basureros...");
@@ -191,12 +83,6 @@ function Dashboard() {
     
     const previousLevels = getBinLevels();
     
-    // Para seguimiento de estados de apertura/cierre
-    const openStates = {};
-    trashBins.forEach(bin => {
-      openStates[bin.id] = bin.is_open;
-    });
-    
     // Crear y configurar el canal
     const channel = supabase
       .channel('trash_bins_channel')
@@ -207,31 +93,17 @@ function Dashboard() {
       }, async (payload) => {
         console.log("¡CAMBIO DETECTADO EN BASUREROS!", payload);
         
-        // Si es una actualización, verificar cambios
+        // Para cualquier cambio, primero refrescar los datos
+        await fetchTrashBins();
+        
+        // Si es una actualización, verificar si cruzó umbrales
         if (payload.eventType === "UPDATE") {
           const binData = payload.new;
           const oldLevel = previousLevels[binData.id] || 0;
           const newLevel = binData.fill_level;
-          const oldOpenState = openStates[binData.id];
-          const newOpenState = binData.is_open;
           
           console.log(`Basurero ${binData.id}: Nivel anterior ${oldLevel}%, nuevo nivel ${newLevel}%`);
           previousLevels[binData.id] = newLevel; // Actualizar para la próxima vez
-          
-          // Verificar si el estado de apertura cambió
-          if (oldOpenState !== undefined && oldOpenState !== newOpenState) {
-            console.log(`Cambio de estado: Basurero ${binData.id} ${newOpenState ? 'abierto' : 'cerrado'}`);
-            
-            // Usar la nueva función para registrar el evento
-            await registerBinEvent(
-              binData.id, 
-              newOpenState ? 'APERTURA' : 'CIERRE',
-              newOpenState ? 'Basurero abierto' : 'Basurero cerrado'
-            );
-            
-            // Actualizar estado guardado
-            openStates[binData.id] = newOpenState;
-          }
           
           // Verificar si cruzó algún umbral crítico
           const crossed80Threshold = oldLevel < 80 && newLevel >= 80;
@@ -239,15 +111,6 @@ function Dashboard() {
           
           if (crossed80Threshold || crossed100Threshold) {
             console.log(`¡UMBRAL CRÍTICO ALCANZADO! ${binData.name || 'Basurero'} pasó de ${oldLevel}% a ${newLevel}%`);
-            
-            // Registrar evento de llenado
-            if (crossed100Threshold) {
-              await registerBinEvent(
-                binData.id,
-                'LLENADO',
-                `Contenedor lleno (${newLevel}%)`
-              );
-            }
             
             // Forzar notificación explícita
             const { sendNotification } = await import("@/lib/notificationService");
@@ -271,9 +134,6 @@ function Dashboard() {
             }
           }
         }
-        
-        // Para cualquier cambio, actualizar datos
-        await fetchTrashBins();
       })
       .subscribe((status) => {
         console.log("Estado de suscripción:", status);
@@ -289,33 +149,8 @@ function Dashboard() {
         }
       });
       
-    // Crear y configurar el canal para eventos de basurero
-    const eventsChannel = supabase
-      .channel('bin_events_channel')
-      .on('postgres_changes', {
-        event: 'INSERT',
-        schema: 'public',
-        table: 'bin_events'
-      }, async (payload) => {
-        console.log("¡NUEVO EVENTO DE BASURERO!", payload);
-        // Recargar los datos para incluir el nuevo evento
-        await fetchBinEvents();
-      })
-      .subscribe((status) => {
-        console.log("Estado de suscripción eventos:", status);
-        if (status === 'SUBSCRIBED') {
-          console.log("✅ Suscripción a eventos de basureros activa");
-        } else if (status === 'CLOSED') {
-          console.log("❌ Suscripción a eventos cerrada, intentando reconectar...");
-          setTimeout(() => {
-            console.log("Intentando reconectar eventos...");
-            subscribeToUpdates();
-          }, 5000);
-        }
-      });
-      
     console.log("Suscripción a basureros configurada correctamente");
-    return [channel, eventsChannel]; // Devolver ambos canales
+    return channel;
   }
 
   const createNewBin = async () => {
@@ -437,8 +272,8 @@ function Dashboard() {
         const updatedBin = data.find(bin => bin.id === currentBin.id);
         
         // Si encontramos el basurero y su nivel ha cambiado
-        if (updatedBin && (updatedBin.fill_level !== currentBin.fill_level || updatedBin.is_open !== currentBin.is_open)) {
-          console.log(`Actualizando UI: Basurero ${currentBin.name} cambió nivel de ${currentBin.fill_level}% a ${updatedBin.fill_level}% o estado de apertura`);
+        if (updatedBin && updatedBin.fill_level !== currentBin.fill_level) {
+          console.log(`Actualizando UI: Basurero ${currentBin.name} cambió de ${currentBin.fill_level}% a ${updatedBin.fill_level}%`);
           interfaceNeedsUpdate = true;
           // Devolver el bin actualizado pero mantener los eventos y otras propiedades
           return {
@@ -456,10 +291,6 @@ function Dashboard() {
       if (interfaceNeedsUpdate) {
         console.log("Actualizando interfaz con nuevos niveles");
         setTrashBins(updatedBins);
-        
-        // Si hubo cambios en los basureros, también actualizamos los eventos
-        // ya que probablemente se generaron nuevos eventos de apertura/cierre
-        fetchBinEvents();
       }
 
       // Verificar cada basurero para notificaciones
@@ -566,37 +397,13 @@ function Dashboard() {
     };
   }, [notificationsEnabled]); // Se reinicia cuando cambia el estado de las notificaciones
 
-  // Nuevo efecto específico para polling de eventos
   useEffect(() => {
-    let eventsPollingInterval;
-
-    const startEventsPolling = () => {
-      // Primera carga inmediata
-      fetchBinEvents();
-      
-      // Configurar el intervalo
-      eventsPollingInterval = setInterval(fetchBinEvents, EVENTS_POLLING_INTERVAL);
-    };
-
-    if (trashBins.length > 0) {
-      console.log("Iniciando polling de eventos de basureros");
-      startEventsPolling();
-    }
-
-    return () => {
-      if (eventsPollingInterval) {
-        clearInterval(eventsPollingInterval);
-      }
-    };
-  }, [trashBins.length]); // Se reinicia cuando cambia el número de basureros
-
-  useEffect(() => {
-    let channels = [];
+    let channel = null;
 
     const setup = async () => {
       try {
         await fetchTrashBins();
-        channels = subscribeToUpdates();
+        channel = subscribeToUpdates();
         
         // Verificar permisos de notificación al inicio
         const hasPermission = await checkNotificationPermission();
@@ -615,27 +422,12 @@ function Dashboard() {
 
     // Limpiar la suscripción cuando el componente se desmonte
     return () => {
-      if (channels && channels.length) {
-        console.log("Limpiando suscripciones...");
-        channels.forEach(channel => {
-          if (channel) channel.unsubscribe();
-        });
+      if (channel) {
+        console.log("Limpiando suscripción a cambios en basureros...");
+        channel.unsubscribe();
       }
     };
   }, []);
-
-  const viewAllEvents = (bin) => {
-    console.log("Abriendo vista de eventos para basurero:", bin.id, bin.name);
-    console.log("Eventos disponibles:", bin.events?.length || 0);
-    
-    // Ordenar eventos por fecha de creación (más recientes primero)
-    const sortedEvents = [...(bin.events || [])].sort((a, b) => 
-      new Date(b.created_at) - new Date(a.created_at)
-    );
-    
-    setSelectedBinEvents(sortedEvents);
-    setEventsDialogOpen(true);
-  };
 
   if (!user) {
     return null
@@ -845,96 +637,6 @@ function Dashboard() {
           </DialogContent>
         </Dialog>
 
-        <Dialog open={eventsDialogOpen} onOpenChange={setEventsDialogOpen}>
-          <DialogContent className="max-w-3xl max-h-[80vh] overflow-hidden flex flex-col">
-            <DialogHeader>
-              <DialogTitle>Historial de eventos</DialogTitle>
-              <DialogDescription>
-                Registro completo de los eventos del basurero
-              </DialogDescription>
-            </DialogHeader>
-            
-            <div className="overflow-y-auto flex-1 pr-2">
-              {isLoadingEvents ? (
-                <div className="flex justify-center items-center py-8">
-                  <RotateCw className="h-8 w-8 animate-spin text-blue-500" />
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  {selectedBinEvents.length > 0 ? (
-                    selectedBinEvents.map((event, index) => (
-                      <div 
-                        key={`event-modal-${event.id || index}`} 
-                        className={`p-3 rounded-lg flex items-start gap-3 ${
-                          event.event_type === 'APERTURA' 
-                            ? 'bg-green-50 border border-green-100' 
-                            : event.event_type === 'CIERRE'
-                              ? 'bg-blue-50 border border-blue-100'
-                              : event.event_type === 'LLENADO'
-                                ? 'bg-red-50 border border-red-100'
-                                : 'bg-white/50 border border-gray-100'
-                        }`}
-                      >
-                        <div className="flex-shrink-0 mt-1">
-                          {event.event_type === 'APERTURA' ? (
-                            <div className="w-6 h-6 rounded-full bg-green-100 flex items-center justify-center">
-                              <span className="text-green-600 text-xs">▲</span>
-                            </div>
-                          ) : event.event_type === 'CIERRE' ? (
-                            <div className="w-6 h-6 rounded-full bg-blue-100 flex items-center justify-center">
-                              <span className="text-blue-600 text-xs">▼</span>
-                            </div>
-                          ) : event.event_type === 'LLENADO' ? (
-                            <div className="w-6 h-6 rounded-full bg-red-100 flex items-center justify-center">
-                              <span className="text-red-600 text-xs">!</span>
-                            </div>
-                          ) : (
-                            <div className="w-6 h-6 rounded-full bg-gray-100 flex items-center justify-center">
-                              <span className="text-gray-600 text-xs">i</span>
-                            </div>
-                          )}
-                        </div>
-                        <div className="flex-1">
-                          <div className="flex justify-between">
-                            <span className={`font-medium ${
-                              event.event_type === 'APERTURA'
-                                ? 'text-green-700'
-                                : event.event_type === 'CIERRE'
-                                  ? 'text-blue-700'
-                                  : event.event_type === 'LLENADO'
-                                    ? 'text-red-700'
-                                    : 'text-gray-700'
-                            }`}>
-                              {event.event_type || 'Evento'}
-                            </span>
-                            <span 
-                              className="text-xs text-gray-500 whitespace-nowrap"
-                              title={new Date(event.created_at).toLocaleString()}
-                            >
-                              {new Date(event.created_at).toLocaleTimeString()}
-                            </span>
-                          </div>
-                          <p className="text-sm mt-1">{event.description}</p>
-                        </div>
-                      </div>
-                    ))
-                  ) : (
-                    <div className="text-center py-8 text-gray-500">
-                      No hay eventos registrados para este basurero
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-            
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setEventsDialogOpen(false)}>
-                Cerrar
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6">
           <AnimatePresence>
             {isLoading ? (
@@ -943,7 +645,7 @@ function Dashboard() {
               </div>
             ) : trashBins.length === 0 ? (
               <div className="col-span-full text-center py-12">
-                <p className="text-gray-500">No hay basureros registrados.</p>
+                <p className="text-gray-500"></p>
                 <Button 
                   variant="outline" 
                   className="mt-4"
@@ -1000,67 +702,19 @@ function Dashboard() {
                         </div>
 
                         <div className="mt-4">
-                          <div className="flex justify-between items-center mb-2">
-                            <h4 className="font-semibold text-gray-700">Últimos eventos:</h4>
-                            <div className="flex items-center gap-1">
-                              <Button 
-                                variant="ghost" 
-                                size="sm" 
-                                className="h-7 px-2 text-xs" 
-                                onClick={() => fetchBinEvents()}
-                                title="Actualizar eventos"
-                                disabled={isLoadingEvents}
-                              >
-                                <RotateCw className={`h-3.5 w-3.5 ${isLoadingEvents ? 'animate-spin' : ''}`} />
-                              </Button>
-                              <Button 
-                                variant="ghost" 
-                                size="sm" 
-                                className="h-7 px-2 text-xs" 
-                                onClick={() => viewAllEvents(bin)}
-                              >
-                                <ClipboardList className="h-3.5 w-3.5 mr-1" />
-                                Ver todos
-                              </Button>
-                            </div>
-                          </div>
+                          <h4 className="font-semibold mb-2 text-gray-700"></h4>
                           <div className="space-y-2 max-h-32 overflow-y-auto">
-                            {bin.events && bin.events.length > 0 ? (
-                              bin.events.slice(0, 5).map((event, index) => (
-                                <div 
-                                  key={`event-${event.id || index}`} 
-                                  className={`text-sm rounded-lg p-2 flex items-center gap-2 ${
-                                    event.event_type === 'APERTURA' 
-                                      ? 'bg-green-50 border border-green-100' 
-                                      : event.event_type === 'CIERRE'
-                                        ? 'bg-blue-50 border border-blue-100'
-                                        : event.event_type === 'LLENADO'
-                                          ? 'bg-red-50 border border-red-100'
-                                          : 'bg-white/50'
-                                  }`}
-                                >
-                                  <span 
-                                    className="text-xs text-gray-500 whitespace-nowrap"
-                                    title={new Date(event.created_at).toLocaleString()}
-                                  >
-                                    {new Date(event.created_at).toLocaleTimeString()}
-                                  </span>
-                                  <span className={`${
-                                    event.event_type === 'APERTURA'
-                                      ? 'text-green-700'
-                                      : event.event_type === 'CIERRE'
-                                        ? 'text-blue-700'
-                                        : event.event_type === 'LLENADO'
-                                          ? 'text-red-700'
-                                          : 'text-gray-700'
-                                  }`}>
-                                    {event.description}
-                                  </span>
-                                </div>
-                              ))
-                            ) : (
-                              <div className="text-sm text-gray-500 italic">No hay eventos registrados</div>
-                            )}
+                            {bin.events.slice(0, 5).map((event, index) => (
+                              <div 
+                                key={index} 
+                                className="text-sm bg-white/50 rounded-lg p-2 flex items-center gap-2"
+                              >
+                                <span className="text-xs text-gray-500 whitespace-nowrap">
+                                  {new Date(event.created_at).toLocaleTimeString()}
+                                </span>
+                                <span className="text-gray-700">{event.description}</span>
+                              </div>
+                            ))}
                           </div>
                         </div>
                       </div>
