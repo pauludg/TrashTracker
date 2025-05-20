@@ -134,6 +134,16 @@ function Dashboard() {
       })
       .subscribe((status) => {
         console.log("Estado de suscripción:", status);
+        if (status === 'SUBSCRIBED') {
+          console.log("✅ Suscripción a cambios en basureros activa");
+        } else if (status === 'CLOSED') {
+          console.log("❌ Suscripción cerrada, intentando reconectar...");
+          // Intentar reconectar después de un breve retraso
+          setTimeout(() => {
+            console.log("Intentando reconectar...");
+            subscribeToUpdates();
+          }, 5000);
+        }
       });
       
     console.log("Suscripción a basureros configurada correctamente");
@@ -353,26 +363,36 @@ function Dashboard() {
   };
 
   useEffect(() => {
-    if (!user) {
-      navigate("/login");
-      return;
-    }
-    
-    // Primero cargar los basureros
-    fetchTrashBins();
-    
-    // Revisar permisos de notificaciones
-    checkNotificationPermission().then(setNotificationsEnabled);
-    
-    // Suscribirse a los cambios en los basureros
-    console.log("Configurando suscripción a cambios de basureros...");
-    const subscription = subscribeToUpdates();
-    
-    return () => {
-      console.log("Limpiando suscripción a basureros...");
-      subscription?.unsubscribe();
+    let channel = null;
+
+    const setup = async () => {
+      try {
+        await fetchTrashBins();
+        channel = subscribeToUpdates();
+        
+        // Verificar permisos de notificación al inicio
+        const hasPermission = await checkNotificationPermission();
+        setNotificationsEnabled(hasPermission);
+      } catch (error) {
+        console.error("Error en setup inicial:", error);
+        toast({
+          variant: "destructive",
+          title: "Error",
+          description: "Error al inicializar el dashboard",
+        });
+      }
     };
-  }, [user]);
+
+    setup();
+
+    // Limpiar la suscripción cuando el componente se desmonte
+    return () => {
+      if (channel) {
+        console.log("Limpiando suscripción a cambios en basureros...");
+        channel.unsubscribe();
+      }
+    };
+  }, []);
 
   if (!user) {
     return null
