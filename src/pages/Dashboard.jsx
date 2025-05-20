@@ -378,26 +378,31 @@ function Dashboard() {
         const oldLevel = previousLevels[bin.id] || 0;
         const newLevel = bin.fill_level;
 
-        // Verificar si cruzó algún umbral crítico
-        const crossed80Threshold = oldLevel < 80 && newLevel >= 80;
-        const crossed100Threshold = oldLevel < 100 && newLevel >= 100;
+        // Solo proceder si el nivel ha cambiado
+        if (oldLevel !== newLevel) {
+          console.log(`Cambio detectado en ${bin.name}: ${oldLevel}% -> ${newLevel}%`);
 
-        if (crossed80Threshold || crossed100Threshold) {
-          console.log(`¡UMBRAL CRÍTICO ALCANZADO! ${bin.name} pasó de ${oldLevel}% a ${newLevel}%`);
-          
-          const message = crossed100Threshold
-            ? `🚨 ¡ALERTA CRÍTICA! El basurero ${bin.name} está LLENO (${newLevel}%). Requiere atención inmediata.`
-            : `⚠️ El basurero ${bin.name} está alcanzando su capacidad máxima (${newLevel}%). Por favor planifique vaciarlo pronto.`;
+          // Verificar si cruzó algún umbral crítico
+          const crossed80Threshold = oldLevel < 80 && newLevel >= 80;
+          const crossed100Threshold = oldLevel < 100 && newLevel >= 100;
 
-          sendNotification("TrashTracker Alerta", message).then(success => {
-            if (!success) {
-              toast({
-                title: crossed100Threshold ? "¡ALERTA CRÍTICA!" : "¡Alerta de capacidad!",
-                description: message,
-                variant: crossed100Threshold ? "destructive" : "default",
-              });
-            }
-          });
+          if (crossed80Threshold || crossed100Threshold) {
+            console.log(`¡UMBRAL CRÍTICO ALCANZADO! ${bin.name} pasó de ${oldLevel}% a ${newLevel}%`);
+            
+            const message = crossed100Threshold
+              ? `🚨 ¡ALERTA CRÍTICA! El basurero ${bin.name} está LLENO (${newLevel}%). Requiere atención inmediata.`
+              : `⚠️ El basurero ${bin.name} está alcanzando su capacidad máxima (${newLevel}%). Por favor planifique vaciarlo pronto.`;
+
+            sendNotification("TrashTracker Alerta", message).then(success => {
+              if (!success) {
+                toast({
+                  title: crossed100Threshold ? "¡ALERTA CRÍTICA!" : "¡Alerta de capacidad!",
+                  description: message,
+                  variant: crossed100Threshold ? "destructive" : "default",
+                });
+              }
+            });
+          }
         }
       });
 
